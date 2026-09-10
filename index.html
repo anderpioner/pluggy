@@ -3187,9 +3187,10 @@ function ContingenciaView({ accounts, onChanged }) {
     setAmtDraft(prev => { const n = { ...prev }; delete n[id]; return n; });
   }
 
-  const pend = rows.filter(r => !r.validada).length;
-  const val  = rows.filter(r => r.validada).length;
-  const dups = rows.filter(r => r.dup_suspeita).length;
+  const pend     = rows.filter(r => !r.validada).length;
+  const val      = rows.filter(r => r.validada).length;
+  const dups     = rows.filter(r => r.dup_suspeita).length;
+  const dupsCont = rows.filter(r => r.dup_cont).length;
   const importedFiles = [...new Set(rows.map(r => r.source_file))];
 
   return (
@@ -3231,7 +3232,8 @@ function ContingenciaView({ accounts, onChanged }) {
             <span>Total: <b>{rows.length}</b></span>
             <span>Pendentes: <b>{pend}</b></span>
             <span>Validadas: <b>{val}</b></span>
-            <span>Possíveis duplicatas: <b>{dups}</b></span>
+            <span>Dup. c/ Pluggy: <b>{dups}</b></span>
+            <span>Dup. entre contingências: <b>{dupsCont}</b></span>
           </div>
           <div className="cont-bulk">
             <button onClick={bulkValidate} disabled={!sel.size}>Validar selecionadas ({sel.size})</button>
@@ -3266,7 +3268,7 @@ function ContingenciaView({ accounts, onChanged }) {
                 const pending = r.amount == null;
                 const draft   = amtDraft[r.id];
                 return (
-                  <tr key={r.id} className={`cont-row${r.validada ? ' validada' : ''}${r.dup_suspeita ? ' dup' : ''}`}>
+                  <tr key={r.id} className={`cont-row${r.validada ? ' validada' : ''}${(r.dup_suspeita || r.dup_cont) ? ' dup' : ''}`}>
                     <td><input type="checkbox" checked={sel.has(r.id)} onChange={() => toggleSel(r.id)} /></td>
                     <td className="dt" style={{fontFamily:'var(--mono)',color:'var(--muted)'}}>{fmtDate(r.date)}</td>
                     <td title={r.kind_label}>
@@ -3293,7 +3295,9 @@ function ContingenciaView({ accounts, onChanged }) {
                       {' '}
                       {intl && <span className="cont-pill intl">{r.raw_currency}</span>}
                       {' '}
-                      {r.dup_suspeita ? <span className="cont-pill dup" title="Já existe uma transação Pluggy nessa conta, mesmo dia, mesmo valor e tipo">possível duplicata</span> : null}
+                      {r.dup_suspeita ? <span className="cont-pill dup" title="Já existe uma transação Pluggy nessa conta, mesmo dia, mesmo valor e tipo">dup. Pluggy</span> : null}
+                      {' '}
+                      {r.dup_cont ? <span className="cont-pill dup" title="Outra transação de contingência com mesma conta, dia, valor e tipo — provavelmente veio de dois extratos">dup. contingência</span> : null}
                     </td>
                     <td>
                       <button className="cont-act-btn"

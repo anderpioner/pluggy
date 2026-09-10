@@ -1529,24 +1529,33 @@ def _parse_contingencia_file(path, anchor_year, anchor_month):
     return out
 
 
-def _contingencia_id(source_file, t):
-    base = f"{source_file}|{t['date']}|{t['description']}|{t['raw_amount']:.2f}|{t['type']}|{t['occ']}"
+def _contingencia_id(t):
+    # sem o nome do arquivo: a mesma transação em arquivos diferentes gera o
+    # mesmo id, então reimportar de outro extrato não duplica.
+    base = f"{t['date']}|{t['description']}|{t['raw_amount']:.2f}|{t['type']}|{t['occ']}"
     return 'cont_' + hashlib.sha1(base.encode('utf-8')).hexdigest()[:24]
 
 
-def _cont_dup_flag(conn, row):
+def _cont_dup_flags(conn, row):
+    """Retorna (dup_pluggy, dup_cont): se bate com uma transação da Pluggy e/ou
+    com outra transação de contingência (mesma conta, dia, valor e tipo)."""
     if row['amount'] is None:
-        return 0
-    hit = conn.execute(
+        return 0, 0
+    pluggy = conn.execute(
         '''SELECT 1 FROM transactions
-           WHERE account_id = ?
-             AND SUBSTR(date,1,10) = ?
-             AND ROUND(ABS(amount),2) = ROUND(ABS(?),2)
-             AND type = ?
+           WHERE account_id = ? AND SUBSTR(date,1,10) = ?
+             AND ROUND(ABS(amount),2) = ROUND(ABS(?),2) AND type = ?
            LIMIT 1''',
         (row['account_id'], row['date'][:10], row['amount'], row['type'])
     ).fetchone()
-    return 1 if hit else 0
+    cont = conn.execute(
+        '''SELECT 1 FROM contingencia_txns
+           WHERE id <> ? AND account_id = ? AND date = ?
+             AND ROUND(ABS(amount),2) = ROUND(ABS(?),2) AND type = ?
+           LIMIT 1''',
+        (row['id'], row['account_id'], row['date'][:10], row['amount'], row['type'])
+    ).fetchone()
+    return (1 if pluggy else 0), (1 if cont else 0)
 
 
 @app.route('/api/contingencia/files')
@@ -1589,7 +1598,7 @@ def api_contingencia_import():
             imported = skipped = pending_intl = 0
             now = datetime.now().isoformat()
             for t in parsed:
-                cid = _contingencia_id(rel, t)
+                cid = _contingencia_id(t)
                 if conn.execute('SELECT 1 FROM contingencia_txns WHERE id=?', (cid,)).fetchone():
                     skipped += 1
                     continue
@@ -1635,7 +1644,7 @@ def api_contingencia_list():
             out  = []
             for r in rows:
                 d = dict(r)
-                d['dup_suspeita'] = _cont_dup_flag(conn, r)
+                d['dup_suspeita'], d['dup_cont'] = _cont_dup_flags(conn, r)
                 d['tag_ids'] = conn.execute(
                     'SELECT GROUP_CONCAT(tag_id) FROM transaction_tags WHERE transaction_id=?', (r['id'],)
                 ).fetchone()[0] or ''
@@ -1679,7 +1688,7 @@ def api_contingencia_update(cid):
 
             row = conn.execute('SELECT * FROM contingencia_txns WHERE id=?', (cid,)).fetchone()
             d = dict(row)
-            d['dup_suspeita'] = _cont_dup_flag(conn, row)
+            d['dup_suspeita'], d['dup_cont'] = _cont_dup_flags(conn, row)
             d['tag_ids'] = conn.execute(
                 'SELECT GROUP_CONCAT(tag_id) FROM transaction_tags WHERE transaction_id=?', (cid,)
             ).fetchone()[0] or ''

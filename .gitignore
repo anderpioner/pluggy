@@ -1,0 +1,20 @@
+# Segredos / configuração local
+.env
+.claude/
+
+# Bancos de dados e backups (dados, não versionar)
+*.db
+*.db.bak
+*.bak
+family.db.backup_*
+
+# Cache Python
+__pycache__/
+*.pyc
+
+# Logs
+*.log
+
+# Relatórios/exports gerados em análises pontuais
+transacoes_adicionadas_*.md
+duplicatas_*.md

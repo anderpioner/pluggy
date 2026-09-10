@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reconectar Contas — Pluggy Família</title>
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
+<script src="https://cdn.pluggy.ai/pluggy-connect/latest/pluggy-connect.js"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+:root{
+  --bg:#0a0c0f;--bg2:#111418;--bg3:#181d23;
+  --border:#1f2833;
+  --text:#e8f0f8;--muted:#8899aa;
+  --accent:#00d4aa;
+  --green:#26a69a;--red:#ef5350;
+  --mono:'SF Mono','Fira Code','Consolas',monospace;
+  --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+}
+html,body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:13px;min-height:100vh;}
+.wrap{max-width:640px;margin:0 auto;padding:32px 20px;}
+.logo{font-family:var(--mono);font-size:11px;color:var(--accent);letter-spacing:2px;text-transform:uppercase;margin-bottom:4px;}
+h1{font-size:20px;margin-bottom:6px;}
+.sub{color:var(--muted);font-size:12px;margin-bottom:28px;}
+.card{
+  background:var(--bg2);border:1px solid var(--border);border-radius:6px;
+  padding:14px 16px;margin-bottom:10px;display:flex;align-items:center;gap:12px;
+}
+.card-main{flex:1;min-width:0;}
+.card-inst{font-size:13px;font-weight:600;}
+.card-accs{font-size:11px;color:var(--muted);margin-top:2px;}
+.card-upd{font-size:10px;color:var(--muted);font-family:var(--mono);margin-top:4px;}
+button.reconnect{
+  background:var(--bg3);border:1px solid var(--border);color:var(--text);
+  font-size:11px;font-family:var(--mono);padding:7px 12px;border-radius:4px;
+  cursor:pointer;white-space:nowrap;
+}
+button.reconnect:hover{border-color:var(--accent);color:var(--accent);}
+button.reconnect:disabled{opacity:0.5;cursor:default;}
+.status{font-size:11px;font-family:var(--mono);margin-top:6px;}
+.status.ok{color:var(--green);}
+.status.err{color:var(--red);}
+.loading{color:var(--muted);font-size:12px;}
+.back{display:inline-block;margin-top:24px;color:var(--muted);font-size:11px;text-decoration:none;font-family:var(--mono);}
+.back:hover{color:var(--accent);}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="logo">Pluggy Família</div>
+  <h1>Reconectar contas</h1>
+  <div class="sub">Reautentica uma conexão existente para forçar a Pluggy a buscar dados novos do banco/cartão. Isso pode pedir login e MFA do banco.</div>
+  <div id="list" class="loading">Carregando itens...</div>
+  <a class="back" href="/">← Voltar ao dashboard</a>
+</div>
+
+<script>
+async function loadItems() {
+  const [itemsRes, accountsRes] = await Promise.all([
+    fetch('/api/items').then(r => r.json()),
+    fetch('/api/accounts').then(r => r.json()),
+  ]);
+  const items = itemsRes.results || [];
+  const accounts = accountsRes.results || [];
+
+  const accsByItem = {};
+  for (const a of accounts) {
+    (accsByItem[a.item_id] = accsByItem[a.item_id] || []).push(a.name);
+  }
+
+  const list = document.getElementById('list');
+  list.className = '';
+  list.innerHTML = '';
+
+  items.sort((a, b) => (b.last_updated_at || '').localeCompare(a.last_updated_at || ''));
+
+  for (const item of items) {
+    const accNames = [...new Set(accsByItem[item.id] || [])];
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.innerHTML = `
+      <div class="card-main">
+        <div class="card-inst">${item.connector_name || item.id}</div>
+        <div class="card-accs">${accNames.length ? accNames.join(', ') : '(sem contas)'}</div>
+        <div class="card-upd">atualizado em ${item.last_updated_at ? new Date(item.last_updated_at).toLocaleString('pt-BR') : '—'}</div>
+        <div class="status" data-status></div>
+      </div>
+      <button class="reconnect" data-item="${item.id}">Reconectar</button>
+    `;
+    list.appendChild(card);
+  }
+
+  list.querySelectorAll('button.reconnect').forEach(btn => {
+    btn.addEventListener('click', () => reconnect(btn));
+  });
+}
+
+async function reconnect(btn) {
+  const itemId = btn.dataset.item;
+  const statusEl = btn.parentElement.querySelector('[data-status]');
+  btn.disabled = true;
+  statusEl.className = 'status';
+  statusEl.textContent = 'Gerando token...';
+
+  try {
+    const tokenRes = await fetch('/api/connect-token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ itemId }),
+    }).then(r => r.json());
+
+    if (tokenRes.error) throw new Error(tokenRes.error);
+
+    const pluggyConnect = new PluggyConnect({
+      connectToken: tokenRes.accessToken,
+      updateItem: itemId,
+      includeSandbox: false,
+      onSuccess: (data) => {
+        statusEl.className = 'status ok';
+        statusEl.textContent = 'Reconectado! Item ' + (data.item?.id || itemId) + ' atualizado.';
+        btn.disabled = false;
+      },
+      onError: (error) => {
+        statusEl.className = 'status err';
+        statusEl.textContent = 'Erro: ' + (error?.message || JSON.stringify(error));
+        btn.disabled = false;
+      },
+      onClose: () => {
+        btn.disabled = false;
+      },
+    });
+    statusEl.textContent = 'Abrindo widget...';
+    pluggyConnect.init();
+  } catch (e) {
+    statusEl.className = 'status err';
+    statusEl.textContent = 'Erro: ' + e.message;
+    btn.disabled = false;
+  }
+}
+
+loadItems().catch(e => {
+  document.getElementById('list').textContent = 'Erro ao carregar: ' + e.message;
+});
+</script>
+</body>
+</html>

@@ -851,7 +851,6 @@ function TxnTable({ txns, sortField, sortDir, onSort, onSyncClick, tags, onToggl
                 {t.description || '—'}
               </td>
               <td>
-                {t.contingencia ? <span style={{color:'var(--muted)'}}>—</span> :
                 <div style={{display:'flex', gap:4, flexWrap:'wrap', alignItems:'center'}}>
                   {txnTags.map(tg => (
                     <span key={tg.id} className="tag-pill"
@@ -879,10 +878,9 @@ function TxnTable({ txns, sortField, sortDir, onSort, onSyncClick, tags, onToggl
                       {tagPopover?.txnId === t.id ? '✕' : '+'}
                     </button>
                   )}
-                </div>}
+                </div>
               </td>
               <td>
-                {t.contingencia ? <span style={{color:'var(--muted)'}}>—</span> :
                 <div style={{display:'flex', gap:4, flexWrap:'wrap', alignItems:'center'}}>
                   {txnConjuntos.map(cj => (
                     <span key={cj.id} className="tag-pill"
@@ -910,7 +908,7 @@ function TxnTable({ txns, sortField, sortDir, onSort, onSyncClick, tags, onToggl
                       {conjuntoPopover?.txnId === t.id ? '✕' : '+'}
                     </button>
                   )}
-                </div>}
+                </div>
               </td>
               <td className="cat">{t.category || '—'}</td>
               <td className="acc">{firstName(t.owner_name) || '—'}</td>
@@ -1744,7 +1742,7 @@ function ReportPreviewModal({ html, allRecipients, onSend, onClose, sending, sen
 }
 
 /* ── Calendar view ── */
-function CalendarView({ allAccounts, syncKey, tags = [], onTagsChange, conjuntos = [], onConjuntosChange, hideRendeFacil, toggleRendeFacil, onTransactionUpdate, calYear, calMonth, setCalYear, setCalMonth }) {
+function CalendarView({ allAccounts, syncKey, tags = [], onTagsChange, conjuntos = [], onConjuntosChange, onContingenciaChange, hideRendeFacil, toggleRendeFacil, onTransactionUpdate, calYear, calMonth, setCalYear, setCalMonth }) {
   const today   = new Date();
   const [selAccIds,  setSelAccIds]  = useState([]);
   const [txns,       setTxns]       = useState([]);
@@ -1832,6 +1830,17 @@ function CalendarView({ allAccounts, syncKey, tags = [], onTagsChange, conjuntos
     const d = await r.json();
     setTxns(prev => prev.map(t => t.id === txnId ? { ...t, is_fixed: d.is_fixed ? 1 : 0 } : t));
     if (onTransactionUpdate) onTransactionUpdate(txnId, { is_fixed: d.is_fixed ? 1 : 0 });
+  }
+
+  async function desvalidarContingencia(txnId) {
+    if (!confirm('Desvalidar esta transação de contingência? Ela sai dos cálculos e volta para a fila de validação.')) return;
+    await fetch(`/api/contingencia/${txnId}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ validada: 0 }),
+    });
+    setTxns(prev => prev.filter(t => t.id !== txnId));
+    if (onConjuntosChange) onConjuntosChange();
+    if (onContingenciaChange) onContingenciaChange();
   }
 
   const [tagPopover,      setTagPopover]      = useState(null); // { txnId, top, left } | null
@@ -2082,22 +2091,26 @@ async function loadMonth() {
                       <div key={t.id} className={`cal-txn-row${t.ignored ? ' ignored' : ''}${t.is_fixed ? ' fixed' : ''}${isDup ? ' dup-suspect' : ''}${t.contingencia ? ' cont' : ''}`}>
                         <button className="cal-txn-ignore-btn"
                           title={t.ignored ? 'Restaurar no somatório' : 'Ignorar no somatório'}
-                          onClick={() => toggleIgnored(t.id)}
-                          disabled={!!t.contingencia}>
+                          onClick={() => toggleIgnored(t.id)}>
                           {t.ignored ? '↩' : '⊘'}
                         </button>
                         <button className="cal-txn-fixed-btn"
                           title={t.is_fixed ? 'Marcar como discricionário' : 'Marcar como vinculado'}
-                          onClick={() => toggleFixed(t.id)}
-                          disabled={!!t.contingencia}>
+                          onClick={() => toggleFixed(t.id)}>
                           {t.is_fixed ? '⬡' : '◇'}
                         </button>
                         <div style={{display:'flex',alignItems:'center',gap:4,overflow:'hidden',minWidth:0}}>
-                          {t.contingencia && <span className="tag-pill cont-mark" title="Transação de contingência (importação manual)">⚡</span>}
+                          {t.contingencia && (
+                            <span className="tag-pill cont-mark" title="Transação de contingência — clique para desvalidar (sai dos cálculos)"
+                              style={{cursor:'pointer'}}
+                              onClick={e => { e.stopPropagation(); desvalidarContingencia && desvalidarContingencia(t.id); }}>
+                              ⚡ desvalidar
+                            </span>
+                          )}
                           <span className="cal-txn-desc" title={t.description}>{t.description || '—'}</span>
                           {isDup && <span className="dup-badge" title="Possível duplicata: mesmo valor na mesma conta em data próxima">⚠</span>}
                         </div>
-                        {t.contingencia ? <span /> : (() => {
+                        {(() => {
                           const txnTagIds = parseTxnTagIds(t);
                           const txnTags   = tags.filter(tg => txnTagIds.includes(tg.id));
                           const isOpen    = tagPopover?.txnId === t.id;
@@ -2124,7 +2137,7 @@ async function loadMonth() {
                             </div>
                           );
                         })()}
-                        {t.contingencia ? <span /> : (() => {
+                        {(() => {
                           const txnConjuntoIds = parseTxnConjuntoIds(t);
                           const txnConjuntos   = conjuntos.filter(cj => txnConjuntoIds.includes(cj.id));
                           const isOpen         = conjuntoPopover?.txnId === t.id;
@@ -5014,7 +5027,7 @@ async function doSync(full = false) {
       ) : view === 'carteira' ? (
         <AtivosView />
       ) : (
-        <CalendarView allAccounts={accounts.filter(a => !a.hidden)} syncKey={syncKey} tags={allTags} onTagsChange={loadTags} conjuntos={allConjuntos} onConjuntosChange={loadConjuntos} hideRendeFacil={hideRendeFacil} toggleRendeFacil={toggleRendeFacil} onTransactionUpdate={handleTransactionUpdate} calYear={calYear} calMonth={calMonth} setCalYear={setCalYear} setCalMonth={setCalMonth} />
+        <CalendarView allAccounts={accounts.filter(a => !a.hidden)} syncKey={syncKey} tags={allTags} onTagsChange={loadTags} conjuntos={allConjuntos} onConjuntosChange={loadConjuntos} onContingenciaChange={() => loadFromDB()} hideRendeFacil={hideRendeFacil} toggleRendeFacil={toggleRendeFacil} onTransactionUpdate={handleTransactionUpdate} calYear={calYear} calMonth={calMonth} setCalYear={setCalYear} setCalMonth={setCalMonth} />
       )}
     </div>
   );

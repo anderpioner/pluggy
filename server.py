@@ -226,7 +226,9 @@ def init_db():
                 source_file  TEXT,
                 imported_at  TEXT,
                 validada     INTEGER DEFAULT 0,
-                validada_at  TEXT DEFAULT ''
+                validada_at  TEXT DEFAULT '',
+                ignored      INTEGER DEFAULT 0,
+                is_fixed     INTEGER DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_cont_date    ON contingencia_txns(date);
             CREATE INDEX IF NOT EXISTS idx_cont_account ON contingencia_txns(account_id);
@@ -249,6 +251,8 @@ with get_db() as conn:
         'ALTER TABLE portfolio_assets ADD COLUMN dy REAL',
         'ALTER TABLE portfolio_assets ADD COLUMN data_pagamento TEXT DEFAULT ""',
         'ALTER TABLE portfolio_assets ADD COLUMN liquidez INTEGER DEFAULT 0',
+        'ALTER TABLE contingencia_txns ADD COLUMN ignored  INTEGER DEFAULT 0',
+        'ALTER TABLE contingencia_txns ADD COLUMN is_fixed INTEGER DEFAULT 0',
     ]:
         try:
             conn.execute(sql)
@@ -522,15 +526,21 @@ def set_account_owner(account_id):
         return jsonify({'error': str(e)}), 500
 
 
+def _txn_table(txn_id):
+    # transações de contingência têm id com prefixo 'cont_' e vivem em outra tabela
+    return 'contingencia_txns' if str(txn_id).startswith('cont_') else 'transactions'
+
+
 @app.route('/api/transactions/<txn_id>/ignored', methods=['POST'])
 def toggle_transaction_ignored(txn_id):
     try:
+        tbl = _txn_table(txn_id)
         with get_db() as conn:
             conn.execute(
-                'UPDATE transactions SET ignored = CASE WHEN ignored=1 THEN 0 ELSE 1 END WHERE id=?',
+                f'UPDATE {tbl} SET ignored = CASE WHEN ignored=1 THEN 0 ELSE 1 END WHERE id=?',
                 (txn_id,)
             )
-            row = conn.execute('SELECT ignored FROM transactions WHERE id=?', (txn_id,)).fetchone()
+            row = conn.execute(f'SELECT ignored FROM {tbl} WHERE id=?', (txn_id,)).fetchone()
         return jsonify({'id': txn_id, 'ignored': bool(row['ignored'])})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -539,12 +549,13 @@ def toggle_transaction_ignored(txn_id):
 @app.route('/api/transactions/<txn_id>/fixed', methods=['POST'])
 def toggle_transaction_fixed(txn_id):
     try:
+        tbl = _txn_table(txn_id)
         with get_db() as conn:
             conn.execute(
-                'UPDATE transactions SET is_fixed = CASE WHEN is_fixed=1 THEN 0 ELSE 1 END WHERE id=?',
+                f'UPDATE {tbl} SET is_fixed = CASE WHEN is_fixed=1 THEN 0 ELSE 1 END WHERE id=?',
                 (txn_id,)
             )
-            row = conn.execute('SELECT is_fixed FROM transactions WHERE id=?', (txn_id,)).fetchone()
+            row = conn.execute(f'SELECT is_fixed FROM {tbl} WHERE id=?', (txn_id,)).fetchone()
         return jsonify({'id': txn_id, 'is_fixed': bool(row['is_fixed'])})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -630,13 +641,17 @@ def api_conjuntos_list():
         with get_db() as conn:
             rows = conn.execute('''
                 SELECT c.*,
-                       COUNT(tc.transaction_id)                                   AS txn_count,
-                       COALESCE(SUM(CASE WHEN t.type='CREDIT' THEN -ABS(t.amount) ELSE ABS(t.amount) END), 0) AS total,
-                       MIN(t.date) AS first_date,
-                       MAX(t.date) AS last_date
+                       COUNT(x.id)                                                AS txn_count,
+                       COALESCE(SUM(CASE WHEN x.type='CREDIT' THEN -ABS(x.amount) ELSE ABS(x.amount) END), 0) AS total,
+                       MIN(x.date) AS first_date,
+                       MAX(x.date) AS last_date
                 FROM conjuntos c
                 LEFT JOIN transaction_conjuntos tc ON tc.conjunto_id = c.id
-                LEFT JOIN transactions t           ON t.id = tc.transaction_id
+                LEFT JOIN (
+                    SELECT id, amount, date, type FROM transactions
+                    UNION ALL
+                    SELECT id, amount, date, type FROM contingencia_txns WHERE validada=1
+                ) x ON x.id = tc.transaction_id
                 GROUP BY c.id
                 ORDER BY c.created_at DESC
             ''').fetchall()
@@ -718,7 +733,32 @@ def api_conjuntos_transactions(conjunto_id):
                 WHERE tc.conjunto_id = ?
                 ORDER BY t.date DESC
             ''', (conjunto_id,)).fetchall()
-        return jsonify({'results': [dict(r) for r in rows]})
+            crows = conn.execute('''
+                SELECT ct.*,
+                       COALESCE((SELECT GROUP_CONCAT(tt.tag_id)
+                                 FROM transaction_tags tt
+                                 WHERE tt.transaction_id = ct.id), '') as tag_ids,
+                       COALESCE((SELECT GROUP_CONCAT(tc2.conjunto_id)
+                                 FROM transaction_conjuntos tc2
+                                 WHERE tc2.transaction_id = ct.id), '') as conjunto_ids
+                FROM transaction_conjuntos tc
+                JOIN contingencia_txns ct ON ct.id = tc.transaction_id
+                WHERE tc.conjunto_id = ?
+            ''', (conjunto_id,)).fetchall()
+
+        results = [dict(r) for r in rows]
+        for r in crows:
+            results.append({
+                'id': r['id'], 'account_id': r['account_id'], 'description': r['description'],
+                'amount': r['amount'], 'date': r['date'], 'type': r['type'], 'category': '',
+                'balance': None, 'currency_code': 'BRL',
+                'account_name': r['account_name'], 'account_type': r['account_type'],
+                'institution': 'Contingência', 'ignored': r['ignored'], 'is_fixed': r['is_fixed'],
+                'owner_name': r['owner'] or '', 'tag_ids': r['tag_ids'], 'conjunto_ids': r['conjunto_ids'],
+                'contingencia': 1,
+            })
+        results.sort(key=lambda x: (x.get('date') or ''), reverse=True)
+        return jsonify({'results': results})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -797,17 +837,23 @@ def api_transactions():
             rows  = conn.execute(q, p).fetchall()
             crows = conn.execute(cq, cp).fetchall()
 
-        results = [dict(r) for r in rows]
-        for r in crows:
-            results.append({
-                'id': r['id'], 'account_id': r['account_id'], 'description': r['description'],
-                'amount': r['amount'], 'date': r['date'], 'type': r['type'], 'category': '',
-                'balance': None, 'currency_code': 'BRL',
-                'account_name': r['account_name'], 'account_type': r['account_type'],
-                'institution': 'Contingência', 'ignored': 0, 'is_fixed': 0,
-                'owner_name': r['owner'] or '', 'tag_ids': '', 'conjunto_ids': '',
-                'contingencia': 1, 'installment': r['installment'] or '',
-            })
+            results = [dict(r) for r in rows]
+            for r in crows:
+                ctags = conn.execute(
+                    'SELECT GROUP_CONCAT(tag_id) FROM transaction_tags WHERE transaction_id=?', (r['id'],)
+                ).fetchone()[0] or ''
+                cconj = conn.execute(
+                    'SELECT GROUP_CONCAT(conjunto_id) FROM transaction_conjuntos WHERE transaction_id=?', (r['id'],)
+                ).fetchone()[0] or ''
+                results.append({
+                    'id': r['id'], 'account_id': r['account_id'], 'description': r['description'],
+                    'amount': r['amount'], 'date': r['date'], 'type': r['type'], 'category': '',
+                    'balance': None, 'currency_code': 'BRL',
+                    'account_name': r['account_name'], 'account_type': r['account_type'],
+                    'institution': 'Contingência', 'ignored': r['ignored'], 'is_fixed': r['is_fixed'],
+                    'owner_name': r['owner'] or '', 'tag_ids': ctags, 'conjunto_ids': cconj,
+                    'contingencia': 1, 'installment': r['installment'] or '',
+                })
         results.sort(key=lambda x: (x.get('date') or ''), reverse=True)
         return jsonify({'results': results, 'total': len(results)})
     except Exception as e:
@@ -1590,6 +1636,12 @@ def api_contingencia_list():
             for r in rows:
                 d = dict(r)
                 d['dup_suspeita'] = _cont_dup_flag(conn, r)
+                d['tag_ids'] = conn.execute(
+                    'SELECT GROUP_CONCAT(tag_id) FROM transaction_tags WHERE transaction_id=?', (r['id'],)
+                ).fetchone()[0] or ''
+                d['conjunto_ids'] = conn.execute(
+                    'SELECT GROUP_CONCAT(conjunto_id) FROM transaction_conjuntos WHERE transaction_id=?', (r['id'],)
+                ).fetchone()[0] or ''
                 out.append(d)
         return jsonify({'results': out})
     except Exception as e:
@@ -1628,16 +1680,32 @@ def api_contingencia_update(cid):
             row = conn.execute('SELECT * FROM contingencia_txns WHERE id=?', (cid,)).fetchone()
             d = dict(row)
             d['dup_suspeita'] = _cont_dup_flag(conn, row)
+            d['tag_ids'] = conn.execute(
+                'SELECT GROUP_CONCAT(tag_id) FROM transaction_tags WHERE transaction_id=?', (cid,)
+            ).fetchone()[0] or ''
+            d['conjunto_ids'] = conn.execute(
+                'SELECT GROUP_CONCAT(conjunto_id) FROM transaction_conjuntos WHERE transaction_id=?', (cid,)
+            ).fetchone()[0] or ''
         return jsonify(d)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+def _cont_purge_ids(conn, ids):
+    """Remove as linhas de contingência e seus vínculos de tag/conjunto."""
+    if not ids:
+        return 0
+    ph = ",".join("?" * len(ids))
+    conn.execute(f'DELETE FROM transaction_tags       WHERE transaction_id IN ({ph})', ids)
+    conn.execute(f'DELETE FROM transaction_conjuntos  WHERE transaction_id IN ({ph})', ids)
+    return conn.execute(f'DELETE FROM contingencia_txns WHERE id IN ({ph})', ids).rowcount
 
 
 @app.route('/api/contingencia/<cid>', methods=['DELETE'])
 def api_contingencia_delete(cid):
     try:
         with get_db() as conn:
-            conn.execute('DELETE FROM contingencia_txns WHERE id=?', (cid,))
+            _cont_purge_ids(conn, [cid])
         return jsonify({'ok': True})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -1649,16 +1717,15 @@ def api_contingencia_delete_bulk():
         body = request.get_json(silent=True) or {}
         with get_db() as conn:
             if body.get('all'):
-                n = conn.execute('DELETE FROM contingencia_txns').rowcount
+                ids = [r[0] for r in conn.execute('SELECT id FROM contingencia_txns')]
             elif body.get('source_file'):
-                n = conn.execute('DELETE FROM contingencia_txns WHERE source_file=?', (body['source_file'],)).rowcount
+                ids = [r[0] for r in conn.execute(
+                    'SELECT id FROM contingencia_txns WHERE source_file=?', (body['source_file'],))]
             elif body.get('ids'):
                 ids = list(body['ids'])
-                n = conn.execute(
-                    f'DELETE FROM contingencia_txns WHERE id IN ({",".join("?" * len(ids))})', ids
-                ).rowcount
             else:
                 return jsonify({'error': 'nada para excluir'}), 400
+            n = _cont_purge_ids(conn, ids)
         return jsonify({'ok': True, 'deleted': n})
     except Exception as e:
         return jsonify({'error': str(e)}), 500

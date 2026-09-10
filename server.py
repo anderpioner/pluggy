@@ -1,4 +1,7 @@
 import os
+import re
+import glob
+import hashlib
 import calendar as _cal
 import threading
 import sqlite3
@@ -19,6 +22,7 @@ CLIENT_ID     = os.getenv('PLUGGY_CLIENT_ID', '')
 CLIENT_SECRET = os.getenv('PLUGGY_CLIENT_SECRET', '')
 ITEM_IDS      = [i.strip() for i in os.getenv('PLUGGY_ITEM_IDS', '').split(',') if i.strip()]
 DB_PATH       = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'family.db')
+CONTINGENCIA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'Contingencia')
 SMTP_USER     = os.getenv('SMTP_USER', '')
 SMTP_PASS     = os.getenv('SMTP_PASS', '')
 RECIPIENTS    = ['andersonpioner@gmail.com', 'vendruscolo.nadia@gmail.com']
@@ -205,6 +209,27 @@ def init_db():
                 date_from            TEXT,
                 date_to              TEXT
             );
+            CREATE TABLE IF NOT EXISTS contingencia_txns (
+                id           TEXT PRIMARY KEY,
+                account_id   TEXT,
+                account_name TEXT,
+                account_type TEXT,
+                owner        TEXT DEFAULT '',
+                date         TEXT,          -- 'YYYY-MM-DD' (sem hora)
+                description  TEXT,
+                amount       REAL,          -- valor efetivo em BRL (NULL enquanto pendente de conversão)
+                type         TEXT,          -- 'DEBIT' | 'CREDIT'
+                raw_amount   REAL,          -- valor original do arquivo
+                raw_currency TEXT DEFAULT 'BRL',
+                installment  TEXT DEFAULT '',
+                kind_label   TEXT DEFAULT '',
+                source_file  TEXT,
+                imported_at  TEXT,
+                validada     INTEGER DEFAULT 0,
+                validada_at  TEXT DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_cont_date    ON contingencia_txns(date);
+            CREATE INDEX IF NOT EXISTS idx_cont_account ON contingencia_txns(account_id);
         ''')
 
 
@@ -472,11 +497,15 @@ def api_items():
 def api_accounts():
     try:
         item_id = request.args.get('itemId')
+        base = '''SELECT a.*,
+                    (SELECT COUNT(*) FROM transactions t WHERE t.account_id = a.id) AS txn_count,
+                    (SELECT MAX(t.date) FROM transactions t WHERE t.account_id = a.id) AS last_txn
+                  FROM accounts a'''
         with get_db() as conn:
             if item_id:
-                rows = conn.execute('SELECT * FROM accounts WHERE item_id=?', (item_id,)).fetchall()
+                rows = conn.execute(base + ' WHERE a.item_id=?', (item_id,)).fetchall()
             else:
-                rows = conn.execute('SELECT * FROM accounts').fetchall()
+                rows = conn.execute(base).fetchall()
         return jsonify({'results': [dict(r) for r in rows], 'total': len(rows)})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -752,9 +781,35 @@ def api_transactions():
             q += ' AND t.description LIKE ?'; p.append(f'%{search}%')
         q += ' ORDER BY t.date DESC'
 
+        # transações de contingência já validadas entram no mesmo fluxo
+        cq = 'SELECT * FROM contingencia_txns WHERE validada=1'
+        cp = []
+        if account_id:
+            cq += ' AND account_id=?';  cp.append(account_id)
+        if date_from:
+            cq += ' AND date>=?';       cp.append(date_from[:10])
+        if date_to:
+            cq += ' AND date<=?';       cp.append(date_to[:10])
+        if search:
+            cq += ' AND description LIKE ?'; cp.append(f'%{search}%')
+
         with get_db() as conn:
-            rows = conn.execute(q, p).fetchall()
-        return jsonify({'results': [dict(r) for r in rows], 'total': len(rows)})
+            rows  = conn.execute(q, p).fetchall()
+            crows = conn.execute(cq, cp).fetchall()
+
+        results = [dict(r) for r in rows]
+        for r in crows:
+            results.append({
+                'id': r['id'], 'account_id': r['account_id'], 'description': r['description'],
+                'amount': r['amount'], 'date': r['date'], 'type': r['type'], 'category': '',
+                'balance': None, 'currency_code': 'BRL',
+                'account_name': r['account_name'], 'account_type': r['account_type'],
+                'institution': 'Contingência', 'ignored': 0, 'is_fixed': 0,
+                'owner_name': r['owner'] or '', 'tag_ids': '', 'conjunto_ids': '',
+                'contingencia': 1, 'installment': r['installment'] or '',
+            })
+        results.sort(key=lambda x: (x.get('date') or ''), reverse=True)
+        return jsonify({'results': results, 'total': len(results)})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -1338,6 +1393,273 @@ def api_portfolio_pending():
             d['already_imported'] = d['id'] in imported_ids
             results.append(d)
         return jsonify({'results': results})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# ── Contingência: importação manual de transações de cartão ───────────────────
+
+_MONTHS_PT = {
+    'janeiro': 1, 'fevereiro': 2, 'março': 3, 'marco': 3, 'abril': 4,
+    'maio': 5, 'junho': 6, 'julho': 7, 'agosto': 8, 'setembro': 9,
+    'outubro': 10, 'novembro': 11, 'dezembro': 12,
+}
+_SKIP_WORDS = {
+    'segunda-feira', 'terça-feira', 'terca-feira', 'quarta-feira',
+    'quinta-feira', 'sexta-feira', 'sábado', 'sabado', 'domingo',
+    'ontem', 'hoje', 'anteontem', 'undefined', '',
+}
+_DATE_RE    = re.compile(r'^(\d{1,2})\s+de\s+([a-zà-ú]+)$', re.IGNORECASE)
+_AMOUNT_RE  = re.compile(r'^([+-])\s*([A-Za-z]{1,3}\$)\s*([\d.]+,\d{2})$')
+_INSTALL_RE = re.compile(r'\((\d+/\d+)\)')
+
+
+def _parse_brl_number(s):
+    return float(s.replace('.', '').replace(',', '.'))
+
+
+def _resolve_cont_year(month_num, anchor_year, anchor_month):
+    # Extratos vão para trás no tempo a partir do mês âncora; só vira o ano
+    # quando o mês da transação está muito à frente do âncora (ex.: Dez numa
+    # pasta de Janeiro).
+    if month_num - anchor_month > 6:
+        return anchor_year - 1
+    return anchor_year
+
+
+def _parse_contingencia_file(path, anchor_year, anchor_month):
+    with open(path, encoding='utf-8') as f:
+        lines = [ln.strip() for ln in f if ln.strip() != '']
+
+    out = []
+    current_date = None
+    occ = {}
+    i = 0
+    while i < len(lines):
+        ln  = lines[i]
+        low = ln.lower()
+
+        m = _DATE_RE.match(ln)
+        if m:
+            mon = _MONTHS_PT.get(m.group(2).lower())
+            if mon:
+                yr = _resolve_cont_year(mon, anchor_year, anchor_month)
+                current_date = f'{yr:04d}-{mon:02d}-{int(m.group(1)):02d}'
+            i += 1
+            continue
+
+        if low in _SKIP_WORDS:
+            i += 1
+            continue
+
+        # `ln` = descrição (merchant); as 2 linhas seguintes = rótulo e valor
+        if i + 2 < len(lines) and current_date:
+            desc, kind, amt_l = ln, lines[i + 1], lines[i + 2]
+            am = _AMOUNT_RE.match(amt_l)
+            if am:
+                sign, cur, num = am.groups()
+                raw_currency = 'BRL' if cur in ('R$', 'r$') else ('USD' if cur.upper() == 'US$' else cur.replace('$', '').upper())
+                raw_amount   = _parse_brl_number(num)
+                txn_type     = 'CREDIT' if sign == '+' else 'DEBIT'
+                inst_m       = _INSTALL_RE.search(desc) or _INSTALL_RE.search(kind)
+                key = (current_date, desc, f'{raw_amount:.2f}', txn_type)
+                occ[key] = occ.get(key, 0) + 1
+                out.append({
+                    'date': current_date,
+                    'description': desc,
+                    'type': txn_type,
+                    'raw_amount': raw_amount,
+                    'raw_currency': raw_currency,
+                    'amount': raw_amount if raw_currency == 'BRL' else None,
+                    'kind_label': kind,
+                    'installment': inst_m.group(1) if inst_m else '',
+                    'occ': occ[key],
+                })
+                i += 3
+                continue
+
+        i += 1
+
+    return out
+
+
+def _contingencia_id(source_file, t):
+    base = f"{source_file}|{t['date']}|{t['description']}|{t['raw_amount']:.2f}|{t['type']}|{t['occ']}"
+    return 'cont_' + hashlib.sha1(base.encode('utf-8')).hexdigest()[:24]
+
+
+def _cont_dup_flag(conn, row):
+    if row['amount'] is None:
+        return 0
+    hit = conn.execute(
+        '''SELECT 1 FROM transactions
+           WHERE account_id = ?
+             AND SUBSTR(date,1,10) = ?
+             AND ROUND(ABS(amount),2) = ROUND(ABS(?),2)
+             AND type = ?
+           LIMIT 1''',
+        (row['account_id'], row['date'][:10], row['amount'], row['type'])
+    ).fetchone()
+    return 1 if hit else 0
+
+
+@app.route('/api/contingencia/files')
+def api_contingencia_files():
+    try:
+        out = []
+        if os.path.isdir(CONTINGENCIA_DIR):
+            for p in sorted(glob.glob(os.path.join(CONTINGENCIA_DIR, '*', '*.txt'))):
+                rel = os.path.relpath(p, CONTINGENCIA_DIR).replace('\\', '/')
+                out.append({'path': rel, 'size': os.path.getsize(p)})
+        return jsonify({'results': out})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/contingencia/import', methods=['POST'])
+def api_contingencia_import():
+    try:
+        body       = request.get_json(silent=True) or {}
+        rel        = (body.get('path') or '').replace('\\', '/').lstrip('/')
+        account_id = body.get('account_id') or ''
+        if not rel or '..' in rel:
+            return jsonify({'error': 'arquivo inválido'}), 400
+        full = os.path.join(CONTINGENCIA_DIR, *rel.split('/'))
+        if not os.path.isfile(full):
+            return jsonify({'error': 'arquivo não encontrado'}), 404
+
+        folder = rel.split('/')[0]
+        mm = re.match(r'^(\d{4})(\d{2})$', folder)
+        if not mm:
+            return jsonify({'error': f'pasta "{folder}" não está no formato AAAAMM'}), 400
+        anchor_year, anchor_month = int(mm.group(1)), int(mm.group(2))
+
+        with get_db() as conn:
+            acc = conn.execute('SELECT id, name, type, owner FROM accounts WHERE id=?', (account_id,)).fetchone()
+            if not acc:
+                return jsonify({'error': 'conta não encontrada'}), 400
+
+            parsed = _parse_contingencia_file(full, anchor_year, anchor_month)
+            imported = skipped = pending_intl = 0
+            now = datetime.now().isoformat()
+            for t in parsed:
+                cid = _contingencia_id(rel, t)
+                if conn.execute('SELECT 1 FROM contingencia_txns WHERE id=?', (cid,)).fetchone():
+                    skipped += 1
+                    continue
+                if t['amount'] is None:
+                    pending_intl += 1
+                conn.execute(
+                    '''INSERT INTO contingencia_txns
+                       (id, account_id, account_name, account_type, owner, date, description,
+                        amount, type, raw_amount, raw_currency, installment, kind_label,
+                        source_file, imported_at, validada, validada_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'')''',
+                    (cid, acc['id'], acc['name'], acc['type'], acc['owner'] or '',
+                     t['date'], t['description'], t['amount'], t['type'],
+                     t['raw_amount'], t['raw_currency'], t['installment'], t['kind_label'],
+                     rel, now)
+                )
+                imported += 1
+
+        return jsonify({
+            'ok': True,
+            'parsed_total': len(parsed),
+            'imported': imported,
+            'skipped_existing': skipped,
+            'international_pending': pending_intl,
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/contingencia')
+def api_contingencia_list():
+    try:
+        date_from = request.args.get('from')
+        date_to   = request.args.get('to')
+        q, p = 'SELECT * FROM contingencia_txns WHERE 1=1', []
+        if date_from:
+            q += ' AND date >= ?'; p.append(date_from[:10])
+        if date_to:
+            q += ' AND date <= ?'; p.append(date_to[:10])
+        q += ' ORDER BY date DESC, description'
+        with get_db() as conn:
+            rows = conn.execute(q, p).fetchall()
+            out  = []
+            for r in rows:
+                d = dict(r)
+                d['dup_suspeita'] = _cont_dup_flag(conn, r)
+                out.append(d)
+        return jsonify({'results': out})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/contingencia/<cid>', methods=['POST'])
+def api_contingencia_update(cid):
+    try:
+        body = request.get_json(silent=True) or {}
+        with get_db() as conn:
+            row = conn.execute('SELECT * FROM contingencia_txns WHERE id=?', (cid,)).fetchone()
+            if not row:
+                return jsonify({'error': 'não encontrada'}), 404
+
+            fields, vals = [], []
+            for k in ('description', 'date', 'type'):
+                if k in body and body[k] not in (None, ''):
+                    fields.append(f'{k}=?'); vals.append(body[k])
+            if 'amount' in body:
+                amt = body['amount']
+                fields.append('amount=?'); vals.append(None if amt in (None, '') else float(amt))
+            if fields:
+                conn.execute(f'UPDATE contingencia_txns SET {", ".join(fields)} WHERE id=?', (*vals, cid))
+                row = conn.execute('SELECT * FROM contingencia_txns WHERE id=?', (cid,)).fetchone()
+
+            if 'validada' in body:
+                want = 1 if body['validada'] else 0
+                if want and row['amount'] is None:
+                    return jsonify({'error': 'Informe o valor em reais antes de validar esta transação internacional.'}), 400
+                conn.execute(
+                    'UPDATE contingencia_txns SET validada=?, validada_at=? WHERE id=?',
+                    (want, datetime.now().isoformat() if want else '', cid)
+                )
+
+            row = conn.execute('SELECT * FROM contingencia_txns WHERE id=?', (cid,)).fetchone()
+            d = dict(row)
+            d['dup_suspeita'] = _cont_dup_flag(conn, row)
+        return jsonify(d)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/contingencia/<cid>', methods=['DELETE'])
+def api_contingencia_delete(cid):
+    try:
+        with get_db() as conn:
+            conn.execute('DELETE FROM contingencia_txns WHERE id=?', (cid,))
+        return jsonify({'ok': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/contingencia/delete-bulk', methods=['POST'])
+def api_contingencia_delete_bulk():
+    try:
+        body = request.get_json(silent=True) or {}
+        with get_db() as conn:
+            if body.get('all'):
+                n = conn.execute('DELETE FROM contingencia_txns').rowcount
+            elif body.get('source_file'):
+                n = conn.execute('DELETE FROM contingencia_txns WHERE source_file=?', (body['source_file'],)).rowcount
+            elif body.get('ids'):
+                ids = list(body['ids'])
+                n = conn.execute(
+                    f'DELETE FROM contingencia_txns WHERE id IN ({",".join("?" * len(ids))})', ids
+                ).rowcount
+            else:
+                return jsonify({'error': 'nada para excluir'}), 400
+        return jsonify({'ok': True, 'deleted': n})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

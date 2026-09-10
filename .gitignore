@@ -18,3 +18,6 @@ __pycache__/
 # Relatórios/exports gerados em análises pontuais
 transacoes_adicionadas_*.md
 duplicatas_*.md
+
+# Extratos de contingência (dados pessoais)
+Contingencia/

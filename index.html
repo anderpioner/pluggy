@@ -396,6 +396,44 @@ td.amt.CREDIT{color:var(--green);}
 .conjunto-add-search{display:flex;gap:8px;}
 .conjunto-add-search input{flex:1;background:var(--bg3);border:1px solid var(--border2);border-radius:5px;color:var(--text);padding:6px 10px;font-size:12px;}
 
+/* ── Contingência ── */
+.cont-view{padding:24px;max-width:1100px;}
+.cont-view h2{font-size:16px;margin:0 0 8px;color:var(--text);}
+.cont-hint{font-size:12px;color:var(--muted);line-height:1.5;margin:0 0 18px;max-width:720px;}
+.cont-import{display:flex;gap:8px;align-items:center;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:16px;flex-wrap:wrap;}
+.cont-import select{background:var(--bg3);border:1px solid var(--border2);border-radius:5px;color:var(--text);padding:6px 10px;font-size:12px;}
+.cont-import button{background:var(--accent);border:none;color:#0a0c0f;font-weight:700;padding:6px 14px;border-radius:5px;cursor:pointer;font-size:12px;}
+.cont-import button:disabled{opacity:.4;cursor:default;}
+.cont-summary{display:flex;gap:18px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-bottom:10px;}
+.cont-summary b{color:var(--text);font-family:var(--mono);}
+.cont-bulk{display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;}
+.cont-bulk button{background:var(--bg3);border:1px solid var(--border2);color:var(--text);font-size:11px;padding:5px 10px;border-radius:5px;cursor:pointer;}
+.cont-bulk button:hover{border-color:var(--accent);}
+.cont-bulk button.danger:hover{border-color:var(--red);color:var(--red);}
+.cont-table{width:100%;border-collapse:collapse;font-size:12px;}
+.cont-table th{text-align:left;padding:6px 8px;border-bottom:1px solid var(--border2);color:var(--muted);font-weight:600;font-size:10px;text-transform:uppercase;letter-spacing:.5px;position:sticky;top:0;background:var(--bg);}
+.cont-table td{padding:5px 8px;border-bottom:1px solid var(--border);}
+.cont-row{border-left:3px solid #ffb74d;}
+.cont-row.validada{border-left-color:var(--green);}
+.cont-row.dup{background:rgba(239,83,80,0.08);}
+.cont-row td.amt{font-family:var(--mono);text-align:right;white-space:nowrap;}
+.cont-row td.amt.DEBIT{color:var(--red);}
+.cont-row td.amt.CREDIT{color:var(--green);}
+.cont-row input.amt-in{width:90px;background:var(--bg3);border:1px solid var(--border2);border-radius:4px;color:var(--text);padding:3px 6px;font-size:12px;font-family:var(--mono);text-align:right;}
+.cont-row input.amt-in.pending{border-color:var(--red);}
+.cont-pill{display:inline-block;padding:1px 6px;border-radius:9px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;}
+.cont-pill.pend{background:rgba(255,183,77,0.18);color:#ffb74d;}
+.cont-pill.val{background:var(--green-dim);color:var(--green);}
+.cont-pill.dup{background:var(--red-dim);color:var(--red);}
+.cont-pill.intl{background:rgba(74,144,217,0.18);color:#4a90d9;}
+.cont-act-btn{background:none;border:1px solid var(--border2);color:var(--text);font-size:11px;padding:3px 8px;border-radius:4px;cursor:pointer;}
+.cont-act-btn:hover{border-color:var(--accent);}
+.cont-act-btn.del:hover{border-color:var(--red);color:var(--red);}
+/* marcador de contingência nas outras views */
+.tag-pill.cont-mark{background:rgba(255,183,77,0.16);color:#ffb74d;border-color:rgba(255,183,77,0.5);font-size:9px;}
+.cont-txn-row td:first-child{box-shadow:inset 3px 0 0 #ffb74d;}
+.cal-txn-row.cont{box-shadow:inset 3px 0 0 #ffb74d;}
+
 /* ── Report preview modal ── */
 .modal-overlay{position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.72);display:flex;align-items:center;justify-content:center;padding:20px;}
 .modal-box{background:var(--bg2);border:1px solid var(--border2);border-radius:6px;display:flex;flex-direction:column;width:780px;max-width:100%;height:94vh;max-height:94vh;}
@@ -806,10 +844,14 @@ function TxnTable({ txns, sortField, sortDir, onSort, onSyncClick, tags, onToggl
           const txnConjuntoIds = t.conjunto_ids ? t.conjunto_ids.split(',').filter(Boolean).map(Number) : [];
           const txnConjuntos   = conjuntos ? conjuntos.filter(cj => txnConjuntoIds.includes(cj.id)) : [];
           return (
-            <tr key={t.id}>
+            <tr key={t.id} className={t.contingencia ? 'cont-txn-row' : ''}>
               <td className="dt">{fmtDate(t.date)}</td>
-              <td className="desc" title={t.description}>{t.description || '—'}</td>
+              <td className="desc" title={t.description}>
+                {t.contingencia ? <span className="tag-pill cont-mark" title="Transação de contingência (importação manual)" style={{marginRight:6}}>⚡ contingência</span> : null}
+                {t.description || '—'}
+              </td>
               <td>
+                {t.contingencia ? <span style={{color:'var(--muted)'}}>—</span> :
                 <div style={{display:'flex', gap:4, flexWrap:'wrap', alignItems:'center'}}>
                   {txnTags.map(tg => (
                     <span key={tg.id} className="tag-pill"
@@ -837,9 +879,10 @@ function TxnTable({ txns, sortField, sortDir, onSort, onSyncClick, tags, onToggl
                       {tagPopover?.txnId === t.id ? '✕' : '+'}
                     </button>
                   )}
-                </div>
+                </div>}
               </td>
               <td>
+                {t.contingencia ? <span style={{color:'var(--muted)'}}>—</span> :
                 <div style={{display:'flex', gap:4, flexWrap:'wrap', alignItems:'center'}}>
                   {txnConjuntos.map(cj => (
                     <span key={cj.id} className="tag-pill"
@@ -867,7 +910,7 @@ function TxnTable({ txns, sortField, sortDir, onSort, onSyncClick, tags, onToggl
                       {conjuntoPopover?.txnId === t.id ? '✕' : '+'}
                     </button>
                   )}
-                </div>
+                </div>}
               </td>
               <td className="cat">{t.category || '—'}</td>
               <td className="acc">{firstName(t.owner_name) || '—'}</td>
@@ -2036,22 +2079,25 @@ async function loadMonth() {
                     .map(t => {
                       const isDup = calDuplicateIds.has(t.id);
                       return (
-                      <div key={t.id} className={`cal-txn-row${t.ignored ? ' ignored' : ''}${t.is_fixed ? ' fixed' : ''}${isDup ? ' dup-suspect' : ''}`}>
+                      <div key={t.id} className={`cal-txn-row${t.ignored ? ' ignored' : ''}${t.is_fixed ? ' fixed' : ''}${isDup ? ' dup-suspect' : ''}${t.contingencia ? ' cont' : ''}`}>
                         <button className="cal-txn-ignore-btn"
                           title={t.ignored ? 'Restaurar no somatório' : 'Ignorar no somatório'}
-                          onClick={() => toggleIgnored(t.id)}>
+                          onClick={() => toggleIgnored(t.id)}
+                          disabled={!!t.contingencia}>
                           {t.ignored ? '↩' : '⊘'}
                         </button>
                         <button className="cal-txn-fixed-btn"
                           title={t.is_fixed ? 'Marcar como discricionário' : 'Marcar como vinculado'}
-                          onClick={() => toggleFixed(t.id)}>
+                          onClick={() => toggleFixed(t.id)}
+                          disabled={!!t.contingencia}>
                           {t.is_fixed ? '⬡' : '◇'}
                         </button>
                         <div style={{display:'flex',alignItems:'center',gap:4,overflow:'hidden',minWidth:0}}>
+                          {t.contingencia && <span className="tag-pill cont-mark" title="Transação de contingência (importação manual)">⚡</span>}
                           <span className="cal-txn-desc" title={t.description}>{t.description || '—'}</span>
                           {isDup && <span className="dup-badge" title="Possível duplicata: mesmo valor na mesma conta em data próxima">⚠</span>}
                         </div>
-                        {(() => {
+                        {t.contingencia ? <span /> : (() => {
                           const txnTagIds = parseTxnTagIds(t);
                           const txnTags   = tags.filter(tg => txnTagIds.includes(tg.id));
                           const isOpen    = tagPopover?.txnId === t.id;
@@ -2078,7 +2124,7 @@ async function loadMonth() {
                             </div>
                           );
                         })()}
-                        {(() => {
+                        {t.contingencia ? <span /> : (() => {
                           const txnConjuntoIds = parseTxnConjuntoIds(t);
                           const txnConjuntos   = conjuntos.filter(cj => txnConjuntoIds.includes(cj.id));
                           const isOpen         = conjuntoPopover?.txnId === t.id;
@@ -3020,6 +3066,242 @@ function ConjuntosView({ conjuntos, onConjuntosChange }) {
         </div>
         <button onClick={addConjunto}>+ Criar conjunto</button>
       </div>
+    </div>
+  );
+}
+
+/* ── Contingência: importação manual de transações de cartão ── */
+function ContingenciaView({ accounts, onChanged }) {
+  const [files,   setFiles]   = useState([]);
+  const [rows,    setRows]    = useState([]);
+  const [selFile, setSelFile] = useState('');
+  const [selAcc,  setSelAcc]  = useState('');
+  const [busy,    setBusy]    = useState(false);
+  const [notice,  setNotice]  = useState(null);
+  const [error,   setError]   = useState(null);
+  const [sel,     setSel]     = useState(() => new Set());
+  const [amtDraft, setAmtDraft] = useState({});   // id -> string em edição
+
+  const creditAccounts = useMemo(
+    () => accounts.filter(a => !a.hidden).sort((a, b) =>
+      (b.type === 'CREDIT') - (a.type === 'CREDIT') || (a.name || '').localeCompare(b.name || '')),
+    [accounts]);
+
+  async function loadFiles() {
+    try {
+      const r = await fetch('/api/contingencia/files');
+      const d = await r.json();
+      setFiles(d.results || []);
+    } catch {}
+  }
+  async function loadRows() {
+    try {
+      const r = await fetch('/api/contingencia');
+      const d = await r.json();
+      setRows(d.results || []);
+    } catch {}
+  }
+  useEffect(() => { loadFiles(); loadRows(); }, []);
+
+  async function doImport() {
+    if (!selFile || !selAcc) { setError('Selecione o arquivo e a conta.'); return; }
+    setBusy(true); setError(null); setNotice(null);
+    try {
+      const r = await fetch('/api/contingencia/import', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: selFile, account_id: selAcc }),
+      });
+      const d = await r.json();
+      if (d.error) throw new Error(d.error);
+      setNotice(`Importadas ${d.imported} (${d.skipped_existing} já existiam · ${d.international_pending} internacionais pendentes de valor)`);
+      await loadRows();
+    } catch (e) { setError(e.message); }
+    finally { setBusy(false); }
+  }
+
+  async function patchRow(id, body) {
+    setError(null);
+    const r = await fetch(`/api/contingencia/${id}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    if (d.error) { setError(d.error); return null; }
+    setRows(prev => prev.map(x => x.id === id ? d : x));
+    onChanged && onChanged();
+    return d;
+  }
+
+  async function delRow(id) {
+    await fetch(`/api/contingencia/${id}`, { method: 'DELETE' });
+    setRows(prev => prev.filter(x => x.id !== id));
+    setSel(prev => { const n = new Set(prev); n.delete(id); return n; });
+    onChanged && onChanged();
+  }
+
+  async function bulkDelete(payload, confirmMsg) {
+    if (!confirm(confirmMsg)) return;
+    const r = await fetch('/api/contingencia/delete-bulk', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const d = await r.json();
+    if (d.error) { setError(d.error); return; }
+    setSel(new Set());
+    await loadRows();
+    onChanged && onChanged();
+  }
+
+  async function bulkValidate() {
+    const ids = [...sel];
+    for (const id of ids) {
+      const row = rows.find(x => x.id === id);
+      if (row && !row.validada && row.amount != null) await patchRow(id, { validada: 1 });
+    }
+    setSel(new Set());
+  }
+
+  function toggleSel(id) {
+    setSel(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  }
+
+  function commitAmount(id) {
+    const raw = amtDraft[id];
+    if (raw === undefined) return;
+    const norm = raw.replace(/\./g, '').replace(',', '.').trim();
+    const val = norm === '' ? '' : parseFloat(norm);
+    patchRow(id, { amount: val });
+    setAmtDraft(prev => { const n = { ...prev }; delete n[id]; return n; });
+  }
+
+  const pend = rows.filter(r => !r.validada).length;
+  const val  = rows.filter(r => r.validada).length;
+  const dups = rows.filter(r => r.dup_suspeita).length;
+  const importedFiles = [...new Set(rows.map(r => r.source_file))];
+
+  return (
+    <div className="cont-view">
+      <h2>Contingência — importação manual</h2>
+      <p className="cont-hint">
+        Para quando o Open Finance não retorna as transações do cartão. Cole o extrato do cartão
+        num arquivo <code>.txt</code> dentro de <code>Contingencia/AAAAMM/</code> e importe aqui.
+        Cada transação importada fica <b>marcada como contingência</b> e <b>só entra nos cálculos depois de validada</b> por você abaixo.
+        Mesmo validada, continua sinalizada como contingência em todas as telas.
+      </p>
+
+      <div className="cont-import">
+        <select value={selFile} onChange={e => setSelFile(e.target.value)}>
+          <option value="">— arquivo —</option>
+          {files.map(f => <option key={f.path} value={f.path}>{f.path}</option>)}
+        </select>
+        <select value={selAcc} onChange={e => setSelAcc(e.target.value)}>
+          <option value="">— conta / cartão —</option>
+          {creditAccounts.map(a => (
+            <option key={a.id} value={a.id}>
+              {a.type === 'CREDIT' ? '💳 ' : ''}{a.name} — {firstName(a.owner)}
+              {a.txn_count != null ? ` · ${a.txn_count} txns` : ''}
+              {a.last_txn ? ` · última ${fmtDate(a.last_txn)}` : ''}
+            </option>
+          ))}
+        </select>
+        <button onClick={doImport} disabled={busy || !selFile || !selAcc}>
+          {busy ? 'Importando…' : 'Importar'}
+        </button>
+      </div>
+
+      {error  && <div className="notif error">⚠ {error}</div>}
+      {notice && !error && <div className="notif success">✓ {notice}</div>}
+
+      {rows.length > 0 && (
+        <>
+          <div className="cont-summary">
+            <span>Total: <b>{rows.length}</b></span>
+            <span>Pendentes: <b>{pend}</b></span>
+            <span>Validadas: <b>{val}</b></span>
+            <span>Possíveis duplicatas: <b>{dups}</b></span>
+          </div>
+          <div className="cont-bulk">
+            <button onClick={bulkValidate} disabled={!sel.size}>Validar selecionadas ({sel.size})</button>
+            <button className="danger" onClick={() => bulkDelete({ ids: [...sel] }, `Excluir ${sel.size} transações de contingência selecionadas?`)} disabled={!sel.size}>
+              Excluir selecionadas
+            </button>
+            {importedFiles.map(f => (
+              <button key={f} className="danger" onClick={() => bulkDelete({ source_file: f }, `Excluir TODAS as transações de contingência importadas de "${f}"?`)}>
+                Excluir tudo de {f}
+              </button>
+            ))}
+            <button className="danger" onClick={() => bulkDelete({ all: true }, 'Excluir TODAS as transações de contingência?')}>
+              Excluir todas
+            </button>
+          </div>
+
+          <table className="cont-table">
+            <thead>
+              <tr>
+                <th style={{width:24}}></th>
+                <th style={{width:90}}>Data</th>
+                <th>Descrição</th>
+                <th style={{width:130}}>Conta</th>
+                <th style={{width:110}}>Valor</th>
+                <th style={{width:150}}>Status</th>
+                <th style={{width:150}}>Ações</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(r => {
+                const intl    = r.raw_currency !== 'BRL';
+                const pending = r.amount == null;
+                const draft   = amtDraft[r.id];
+                return (
+                  <tr key={r.id} className={`cont-row${r.validada ? ' validada' : ''}${r.dup_suspeita ? ' dup' : ''}`}>
+                    <td><input type="checkbox" checked={sel.has(r.id)} onChange={() => toggleSel(r.id)} /></td>
+                    <td className="dt" style={{fontFamily:'var(--mono)',color:'var(--muted)'}}>{fmtDate(r.date)}</td>
+                    <td title={r.kind_label}>
+                      {r.description}
+                      {r.installment && <span style={{color:'var(--muted)'}}> ({r.installment})</span>}
+                    </td>
+                    <td style={{color:'var(--muted)'}}>{r.account_name}</td>
+                    <td className={`amt ${r.type}`}>
+                      {intl ? (
+                        <input className={`amt-in${pending ? ' pending' : ''}`}
+                          placeholder={`${r.raw_currency} ${r.raw_amount.toFixed(2)}`}
+                          value={draft !== undefined ? draft : (r.amount != null ? String(r.amount).replace('.', ',') : '')}
+                          onChange={e => setAmtDraft(p => ({ ...p, [r.id]: e.target.value }))}
+                          onBlur={() => commitAmount(r.id)}
+                          onKeyDown={e => e.key === 'Enter' && e.currentTarget.blur()} />
+                      ) : (
+                        <>{r.type === 'DEBIT' ? '−' : '+'}{fmt(r.amount)}</>
+                      )}
+                    </td>
+                    <td>
+                      {r.validada
+                        ? <span className="cont-pill val">Validada</span>
+                        : <span className="cont-pill pend">Pendente</span>}
+                      {' '}
+                      {intl && <span className="cont-pill intl">{r.raw_currency}</span>}
+                      {' '}
+                      {r.dup_suspeita ? <span className="cont-pill dup" title="Já existe uma transação Pluggy nessa conta, mesmo dia, mesmo valor e tipo">possível duplicata</span> : null}
+                    </td>
+                    <td>
+                      <button className="cont-act-btn"
+                        onClick={() => patchRow(r.id, { validada: r.validada ? 0 : 1 })}
+                        disabled={!r.validada && pending}
+                        title={!r.validada && pending ? 'Informe o valor em R$ antes de validar' : ''}>
+                        {r.validada ? 'Desvalidar' : 'Validar'}
+                      </button>
+                      {' '}
+                      <button className="cont-act-btn del" onClick={() => delRow(r.id)}>Excluir</button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </>
+      )}
+      {rows.length === 0 && (
+        <div className="cal-no-txn">Nenhuma transação de contingência importada.</div>
+      )}
     </div>
   );
 }
@@ -4672,6 +4954,9 @@ async function doSync(full = false) {
           <button className={`tab-btn${view==='conjuntos'?' active':''}`} onClick={() => setView('conjuntos')}>
             Conjuntos
           </button>
+          <button className={`tab-btn${view==='contingencia'?' active':''}`} onClick={() => setView('contingencia')}>
+            Contingência
+          </button>
           <button className={`tab-btn${view==='carteira'?' active':''}`} onClick={() => setView('carteira')}>
             Carteira
           </button>
@@ -4724,6 +5009,8 @@ async function doSync(full = false) {
         <TagsView tags={allTags} onTagsChange={loadTags} />
       ) : view === 'conjuntos' ? (
         <ConjuntosView conjuntos={allConjuntos} onConjuntosChange={loadConjuntos} />
+      ) : view === 'contingencia' ? (
+        <ContingenciaView accounts={accounts} onChanged={() => { loadFromDB(); setSyncKey(k => k + 1); }} />
       ) : view === 'carteira' ? (
         <AtivosView />
       ) : (

@@ -4990,7 +4990,7 @@ async function doSync(full = false) {
             <div className="tbl-controls">
               <select value={selAcc} onChange={e => setSelAcc(e.target.value)}>
                 <option value="">Todas as contas</option>
-                {accounts.map(a => <option key={a.id} value={a.id}>{a.name} — {a.institution}</option>)}
+                {accounts.map(a => <option key={a.id} value={a.id}>{a.name}{a.owner ? ` — ${firstName(a.owner)}` : ` — ${a.institution}`}</option>)}
               </select>
               <select value={selCat} onChange={e => setSelCat(e.target.value)}>
                 <option value="">Todas as categorias</option>

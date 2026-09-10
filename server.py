@@ -99,7 +99,8 @@ def init_db():
                 institution      TEXT,
                 credit_limit     REAL,
                 available_credit REAL,
-                hidden           INTEGER DEFAULT 0
+                hidden           INTEGER DEFAULT 0,
+                name_locked      INTEGER DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS transactions (
                 id            TEXT PRIMARY KEY,
@@ -253,6 +254,7 @@ with get_db() as conn:
         'ALTER TABLE portfolio_assets ADD COLUMN liquidez INTEGER DEFAULT 0',
         'ALTER TABLE contingencia_txns ADD COLUMN ignored  INTEGER DEFAULT 0',
         'ALTER TABLE contingencia_txns ADD COLUMN is_fixed INTEGER DEFAULT 0',
+        'ALTER TABLE accounts ADD COLUMN name_locked INTEGER DEFAULT 0',
     ]:
         try:
             conn.execute(sql)
@@ -320,17 +322,22 @@ def _upsert_account(conn, acc, institution):
     conn.execute(
         '''INSERT OR REPLACE INTO accounts
            (id, item_id, name, type, subtype, balance, currency_code,
-            institution, credit_limit, available_credit, hidden, owner)
-           VALUES (?,?,?,?,?,?,?,?,?,?,
+            institution, credit_limit, available_credit, hidden, owner, name_locked)
+           VALUES (?,?,
+               -- nome: se a conta tem name_locked=1 (renomeada à mão), mantém o nome atual
+               COALESCE((SELECT name FROM accounts WHERE id=? AND name_locked=1), ?),
+               ?,?,?,?,?,?,?,
                COALESCE((SELECT hidden FROM accounts WHERE id=?), 0),
-               COALESCE(NULLIF(?,  ''), (SELECT owner FROM accounts WHERE id=?), ''))''',
-        (acc_id, acc.get('itemId', ''), acc.get('name', ''),
+               COALESCE(NULLIF(?,  ''), (SELECT owner FROM accounts WHERE id=?), ''),
+               COALESCE((SELECT name_locked FROM accounts WHERE id=?), 0))''',
+        (acc_id, acc.get('itemId', ''),
+         acc_id, acc.get('name', ''),
          acc.get('type', ''), acc.get('subtype', ''),
          acc.get('balance', 0), acc.get('currencyCode', 'BRL'),
          institution,
          credit.get('creditLimit'), credit.get('availableCreditLimit'),
          acc_id,
-         pluggy_owner, acc_id)
+         pluggy_owner, acc_id, acc_id)
     )
 
 
